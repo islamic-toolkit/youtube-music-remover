@@ -2,6 +2,12 @@
 
 # 🎵 YouTube Music Remover
 
+<div align="center">
+
+![Visitors](https://api.visitorbadge.io/api/visitors?path=https%3A%2F%2Fgithub.com%2Fislamic-toolkit%2Fyoutube-music-remover&label=VISITORS&countColor=%23263759)
+
+</div>
+
 ### A Chrome & Comet Browser Extension that strips background music from YouTube videos in real-time, leaving only vocals and speech.
 
 [![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://github.com/islamic-toolkit/youtube-music-remover)
