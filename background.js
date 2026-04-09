@@ -682,10 +682,11 @@ async function y2mateFetchConfig(signal) {
   if (!jsonMatch) throw new Error("Could not find auth payload on y2mate.sc page");
   const payload = JSON.parse(jsonMatch[1]);
   const key = decodeY2MateAuthorization(payload);
-  const paramCode = Number(payload?.[6]);
+  const etacloudParamCode = Number(payload?.[6]);
   return {
     key,
-    paramName: Number.isFinite(paramCode) ? String.fromCharCode(paramCode) : "a",
+    iotacloudParamName: "a",
+    etacloudInitParamName: Number.isFinite(etacloudParamCode) ? String.fromCharCode(etacloudParamCode) : "r",
   };
 }
 
@@ -702,14 +703,14 @@ async function getY2MateConfig(signal) {
 async function iotacloudDownload(videoId, signal, statusCallback) {
   const config = await getY2MateConfig(signal);
   const timestamp = getY2MateTimestampSec();
-  const apiUrl = `https://iotacloud.org/api/?${config.paramName}=${encodeURIComponent(config.key)}&r=1&v=${encodeURIComponent(videoId)}&t=${timestamp}`;
+  const apiUrl = `https://iotacloud.org/api/?${config.iotacloudParamName}=${encodeURIComponent(config.key)}&r=1&v=${encodeURIComponent(videoId)}&t=${timestamp}`;
 
   if (statusCallback) statusCallback("Converting video to audio...");
 
   const response = await fetch(apiUrl, {
     signal,
     headers: {
-      "Accept": "application/json",
+      "Accept": "*/*",
       "Origin": "https://y2mate.sc",
       "Referer": "https://y2mate.sc/",
     },
@@ -727,11 +728,11 @@ async function iotacloudDownload(videoId, signal, statusCallback) {
     await sleep(3000);
     if (statusCallback) statusCallback(`Converting audio... (poll ${pollCount}/${MAX_POLLS})`);
 
-    const pollUrl = `https://iotacloud.org/api/?${config.paramName}=${encodeURIComponent(config.key)}&r=${pollCount}&v=${encodeURIComponent(videoId)}&t=${timestamp}`;
+    const pollUrl = `https://iotacloud.org/api/?${config.iotacloudParamName}=${encodeURIComponent(config.key)}&r=${pollCount}&v=${encodeURIComponent(videoId)}&t=${timestamp}`;
     const pollResp = await fetch(pollUrl, {
       signal,
       headers: {
-        "Accept": "application/json",
+        "Accept": "*/*",
         "Origin": "https://y2mate.sc",
         "Referer": "https://y2mate.sc/",
       },
@@ -790,7 +791,7 @@ function describeY2MateError(code) {
 async function etacloudDownload(videoId, signal, statusCallback) {
   const config = await getY2MateConfig(signal);
   const initUrl = buildUrlWithParams(ETACLOUD_INIT_URL, {
-    [config.paramName]: config.key,
+    [config.etacloudInitParamName]: config.key,
     t: getY2MateTimestampSec(),
   });
 
