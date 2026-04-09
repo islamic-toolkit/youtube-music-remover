@@ -1,220 +1,153 @@
-<div align="center">
+# YouTube Music Remover
 
-# 🎵 YouTube Music Remover
+YouTube Music Remover is a Manifest V3 browser extension for YouTube that separates vocals and speech from background music.
 
-<div align="center">
+The current codebase supports two provider pipelines:
 
-![Visitors](https://api.visitorbadge.io/api/visitors?path=https%3A%2F%2Fgithub.com%2Fislamic-toolkit%2Fyoutube-music-remover&label=VISITORS&countColor=%23263759)
+- `direct_link`: the provider receives the YouTube link and processes it remotely
+- `upload_audio`: the extension downloads the audio, splits it into chunks, uploads the chunks, and streams cleaned results progressively
 
-</div>
+Current providers:
 
-### A Chrome & Comet Browser Extension that strips background music from YouTube videos in real-time, leaving only vocals and speech.
+- `SoundBoost` -> `direct_link`
+- `Remove Music` -> `upload_audio`
 
-[![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://github.com/islamic-toolkit/youtube-music-remover)
-[![Manifest V3](https://img.shields.io/badge/Manifest-V3-34A853?style=for-the-badge&logo=google&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.1.0-blue?style=for-the-badge)]()
+The extension includes English and Arabic support, an in-player action button, auto-start, cached results, and playback controls that let the user decide whether to keep the original video audio playing while upload-based processing runs.
 
-<br/>
+## Current Version
 
-<img src="icons/icon128.png" alt="YouTube Music Remover Logo" width="128" height="128"/>
+The repository currently matches extension version `4.3.0` from [manifest.json](./manifest.json).
 
-**AI-powered vocal isolation for YouTube • Streaming playback • English & Arabic**
+## Features
 
-[Installation](#-installation) · [How It Works](#-how-it-works) · [Features](#-features) · [Contributing](#-contributing)
+- In-player YouTube control for starting or stopping the music-removal flow
+- Two explicit provider pipelines for current and future integrations
+- Chunked upload pipeline for providers that need local audio uploads
+- Direct-link pipeline for providers that process from the YouTube URL
+- Progressive playback for chunked results when ready
+- Auto-start on page load
+- Ask-before-starting playback behavior
+- English and Arabic UI with RTL support
+- Cached cleaned-audio result URLs for faster reuse
 
-</div>
+## Provider Behavior
 
----
+### Direct-link providers
 
-<div align="center">
+Direct-link providers process the video from its original YouTube URL.
 
-<img src="icons/home.png" alt="YouTube Music Remover Screenshot" width="400"/>
+- `Chunk Duration` is disabled
+- A warning is shown in the popup because very long videos may take longer
+- The playback-behavior preference is still available
 
-</div>
+### Upload-audio providers
 
----
+Upload-audio providers require the extension to download and split audio locally before sending it to the provider.
 
-## ✨ Features
+- `Chunk Duration` is enabled
+- Playback can begin progressively as chunks become ready
+- The same playback-behavior preference remains available
 
-| Feature | Description |
-|---------|-------------|
-| 🎤 **AI Vocal Isolation** | Separates vocals from background music using AI stem separation |
-| ⚡ **Streaming Playback** | Audio starts playing instantly — no waiting for full downloads |
-| 🔁 **Auto-Start Mode** | Automatically removes music when you open any YouTube video |
-| 🌐 **Bilingual UI** | Full English and Arabic support with RTL layout |
-| 💾 **Smart Caching** | Previously processed videos load instantly from cache |
-| 🎛️ **One-Click Toggle** | Floating button on the YouTube player to toggle vocals on/off |
-| 🔇 **Seamless Sync** | Vocals stay perfectly synced with video playback |
-| 🧩 **Manifest V3** | Built on the latest Chrome Extension architecture |
+## How It Works
 
-## 🎬 How It Works
+### Direct-link flow
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
-│  YouTube     │────▶│  Import URL   │────▶│  AI Stem Split  │────▶│  Stream      │
-│  Video Page  │     │  to API       │     │  (Vocals Only)  │     │  Vocals Back │
-└─────────────┘     └──────────────┘     └─────────────────┘     └──────────────┘
-```
+1. Open a YouTube watch page
+2. Click the extension button in the player, or enable auto-start
+3. The provider imports the YouTube URL remotely
+4. The extension polls provider status
+5. The cleaned vocals URL is streamed back into the player
 
-1. **Navigate** to any YouTube video
-2. **Click** the 🎵 button on the player (or enable Auto-Start)
-3. **AI separates** the vocal track from the music
-4. **Audio streams** in and starts playing immediately — original video audio is muted
+### Upload-audio flow
 
-The extension uses [SoundBoost AI](https://soundboost.ai) for real-time audio stem separation.
+1. Open a YouTube watch page
+2. Click the extension button in the player, or enable auto-start
+3. The extension downloads the audio source
+4. Audio is split into chunks according to `Chunk Duration`
+5. Chunks are uploaded and processed in parallel
+6. Cleaned chunks are streamed back progressively and synced to the video
 
-## 📦 Installation
+## Installation
 
-### From Source (Developer Mode)
+### Load unpacked
 
-1. **Clone** this repository:
-   ```bash
-   git clone https://github.com/islamic-toolkit/youtube-music-remover.git
-   cd youtube-music-remover
-   ```
+1. Download or clone this repository
+2. Open `chrome://extensions/`
+3. Enable `Developer mode`
+4. Click `Load unpacked`
+5. Select the project folder
 
-2. Open **Chrome** or **Comet Browser** and navigate to `chrome://extensions/`
+The extension is intended for Chromium-based browsers that support Manifest V3 and the required Chrome extension APIs.
 
-3. Enable **Developer Mode** (toggle in the top-right corner)
+## Settings
 
-4. Click **"Load unpacked"** and select the project folder
+The popup currently exposes:
 
-5. Navigate to any YouTube video and click the 🎵 button!
+- `Extension Enabled`
+- `Auto-Start on Page Load`
+- `Language`
+- `Provider`
+- `Chunk Duration`
+- `Ask Before Starting`
 
-### From Release
+Important behavior:
 
-1. Download the latest `.zip` from [Releases](https://github.com/islamic-toolkit/youtube-music-remover/releases)
-2. Extract the archive
-3. Follow steps 2–5 above
+- `Chunk Duration` is available only for upload-audio providers
+- `Ask Before Starting` remains available for both provider types
+- `Play Immediately` is chosen through the in-player prompt rather than the popup
 
-## 🏗️ Project Structure
+## Project Structure
 
-```
+```text
 youtube-music-remover/
-├── manifest.json       # Extension manifest (V3)
-├── background.js       # Service worker — API calls, caching, stem separation
-├── content.js          # YouTube page injection — UI, audio sync, playback
-├── i18n.js             # Internationalization (English + Arabic translations)
-├── popup.html          # Extension popup UI
-├── popup.js            # Popup logic — settings, language, auto-start
-├── offscreen.html      # Offscreen document for audio CORS proxy
-├── styles.css          # Floating player UI styles
-└── icons/
-    ├── icon16.png      # Toolbar icon
-    ├── icon48.png      # Extension management icon
-    └── icon128.png     # Chrome Web Store icon
+|-- _locales/
+|-- icons/
+|-- background.js
+|-- content-ui-helpers.js
+|-- content.js
+|-- i18n.js
+|-- manifest.json
+|-- offscreen.html
+|-- popup.html
+|-- popup.js
+|-- provider-catalog.js
+`-- styles.css
 ```
 
-## ⚙️ Configuration
+Key files:
 
-Click the extension icon in your toolbar to access settings:
+- `provider-catalog.js`: shared provider definitions and capability metadata
+- `background.js`: provider orchestration, caching, download/upload handling, and job lifecycle
+- `content.js`: player UI, prompt behavior, playback sync, and streaming
+- `popup.js`: settings UI and provider-aware controls
+- `i18n.js`: runtime translations shared across popup, content, and background
+- `_locales/`: Chrome extension locale resources
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| **Enable Extension** | Master on/off switch | ✅ On |
-| **Auto-Start** | Automatically process videos on page load | ❌ Off |
-| **Language** | Switch between English and العربية | English |
+## Localization
 
-## 🔧 Technical Details
+The extension currently supports:
 
-### Architecture
+- English
+- Arabic
 
-- **Manifest V3** — Modern service worker-based architecture
-- **Offscreen Document** — Used for audio proxying to bypass CORS restrictions
-- **Chrome Storage API** — Persists settings and vocals URL cache
-- **Streaming First** — Vocals URL is streamed directly to an `<audio>` element instead of downloading + base64 encoding (eliminates the biggest performance bottleneck)
+Localization is split into two layers:
 
-### API Flow
+- Chrome locale metadata in `_locales/`
+- shared runtime strings in `i18n.js`
 
-```
-YouTube URL → Import → Poll Status → Start Separation → Poll Stems → Stream Vocals URL
-```
+If you add new user-facing text, update both places when needed so popup text, in-player text, and extension metadata stay aligned.
 
-### Caching Strategy
+## Development Notes
 
-- Processed vocals URLs are cached in `chrome.storage.local`
-- Cache entries include timestamps for expiration
-- Maximum cache size is enforced (oldest entries evicted via LRU)
-- Cache hits skip the entire API pipeline — instant playback
+- The codebase is organized around provider capabilities rather than one-off provider branches
+- New providers should be added through `provider-catalog.js` first
+- Direct-link and upload-audio providers should keep using the explicit pipeline split already in the background worker
+- Manual verification on real YouTube pages is important for UI placement, provider flow, and playback timing
 
-### Permissions
+## Contributing
 
-| Permission | Reason |
-|------------|--------|
-| `activeTab` | Access the current YouTube tab |
-| `storage` | Save settings and cached vocal URLs |
-| `offscreen` | Audio proxy document for CORS bypass |
-| `host_permissions` | YouTube domains + SoundBoost API + R2 storage |
+Contribution guidance lives in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-## 🌍 Internationalization
+## License
 
-The extension ships with full **English** and **Arabic** support:
-
-- All UI strings are externalized in `i18n.js`
-- Arabic interface uses proper **RTL layout**
-- Language preference persists across sessions
-- Status messages during processing are also translated
-
-### Adding a New Language
-
-1. Open `i18n.js`
-2. Add a new language key with all translation strings:
-   ```javascript
-   fr: {
-     extName: "Islamic Toolkit - Suppresseur de Musique",
-     // ... add all keys
-   }
-   ```
-3. Add the option in `popup.html`'s language selector
-4. Submit a PR!
-
-## 🤝 Contributing
-
-Contributions are welcome! Here's how you can help:
-
-1. **Fork** the repository
-2. **Create** a feature branch: `git checkout -b feature/amazing-feature`
-3. **Commit** your changes: `git commit -m 'Add amazing feature'`
-4. **Push** to the branch: `git push origin feature/amazing-feature`
-5. **Open** a Pull Request
-
-### Ideas for Contributions
-
-- 🌐 Add more languages (French, Turkish, Urdu, etc.)
-- 🎨 Dark/light theme for the popup
-- 📊 Usage statistics dashboard
-- 🔊 Volume mixer (vocals vs. original audio blend)
-- 📱 Firefox / Edge port
-
-## 📋 Changelog
-
-### v2.1.0 (Latest)
-- ⚡ **Streaming playback** — audio starts playing within seconds
-- 🔁 **Auto-Start mode** — configurable automatic music removal
-- 💾 **URL caching** — instant replay for previously processed videos
-- 🌐 **Arabic language** support with RTL layout
-- 🏗️ Offscreen document for CORS-free audio proxying
-- 🛡️ Abort controller for clean request cancellation
-
-### v1.0.0
-- Initial release with basic vocal isolation
-
-## 📄 License
-
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [SoundBoost AI](https://soundboost.ai) — AI-powered audio stem separation API
-- [Islamic Toolkit](https://github.com/islamic-toolkit) — Developer team
-
----
-
-<div align="center">
-
-**Made with ❤️ by [Islamic Toolkit](https://github.com/islamic-toolkit)**
-
-If this project helps you, please consider giving it a ⭐
-
-</div>
+This project is licensed under the MIT License. See [LICENSE](./LICENSE).

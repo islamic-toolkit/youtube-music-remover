@@ -1,48 +1,105 @@
 # Contributing to YouTube Music Remover
 
-Thank you for your interest in contributing! 🎉
+Thanks for contributing.
 
-## Getting Started
+## Before You Start
 
-1. Fork the repo and clone it locally
-2. Load the extension in Chrome or Comet Browser Developer Mode
-3. Make your changes and test them on YouTube
+This extension is a browser-based YouTube integration, so most meaningful changes should be verified on real YouTube watch pages after loading the extension unpacked.
 
-## Development Setup
+The current architecture is centered around:
 
-```bash
-git clone https://github.com/YOUR_USERNAME/youtube-music-remover.git
-cd youtube-music-remover
-```
+- shared provider metadata in `provider-catalog.js`
+- two explicit processing pipelines in `background.js`
+- in-player UI and playback logic in `content.js`
+- popup settings and provider-aware controls in `popup.js`
 
-Then load the folder as an unpacked extension in `chrome://extensions/`.
+## Local Setup
 
-## Guidelines
+1. Fork the repository
+2. Clone your fork
+3. Open `chrome://extensions/`
+4. Enable `Developer mode`
+5. Click `Load unpacked`
+6. Select the repository folder
 
-- **Code style**: Use clear, descriptive variable names and add comments for complex logic
-- **Testing**: Manually test on YouTube with multiple video types (music videos, podcasts, lectures)
-- **Commits**: Use clear commit messages (e.g., `feat: add French translation`, `fix: audio sync on live streams`)
-- **PRs**: Describe what your change does and include screenshots if it affects the UI
+## What To Keep In Sync
 
-## Translation Guide
+When you change user-facing behavior, please update the related docs and strings too.
 
-To add a new language:
+Examples:
 
-1. Open `i18n.js`
-2. Copy the `en` object and create a new key (e.g., `fr`, `tr`, `ur`)
-3. Translate all string values
-4. Add the language option to the `<select>` in `popup.html`
-5. Test RTL if your language requires it
+- provider capabilities -> `provider-catalog.js`, popup behavior, and README
+- playback behavior -> `content.js`, popup wording, and README
+- localization -> `i18n.js` and `_locales/`
+- extension metadata -> `manifest.json` and README when relevant
 
-## Reporting Bugs
+## Provider Changes
 
-Open an issue with:
-- Browser version (Chrome or Comet Browser)
-- Extension version
-- Steps to reproduce
-- YouTube video URL (if relevant)
-- Console errors (right-click extension → Inspect)
+Any provider update should start with the provider catalog.
 
-## Code of Conduct
+For a new provider, define:
 
-Be respectful, inclusive, and constructive. We're all here to build something good.
+- `id`
+- `labelKey`
+- `pipelineType`
+- `supportsChunkDuration`
+- `supportsPlaybackPrompt`
+- `selectionWarningKey`
+
+Then wire the implementation into the correct background pipeline:
+
+- `direct_link` providers use `start(job, signal)` and `poll(job, signal)`
+- `upload_audio` providers use `prepareChunk(chunk, job, signal)` and `pollChunk(chunk, job, signal)`
+
+Avoid adding new hardcoded provider checks in the popup or content script when the same behavior can be read from the catalog.
+
+## Manual Verification Checklist
+
+Before opening a pull request, manually verify the flows affected by your change.
+
+Suggested checks:
+
+- extension loads correctly as unpacked
+- player button appears on YouTube watch pages
+- popup settings save and restore correctly
+- English and Arabic both render correctly
+- direct-link providers disable only `Chunk Duration`
+- upload-audio providers still support chunked processing and progressive playback
+- cached results still reuse correctly
+- auto-start behaves as expected
+
+## Documentation
+
+Please update these files when behavior changes:
+
+- `README.md`
+- `CONTRIBUTING.md`
+- `LICENSE` if copyright years need adjustment
+
+## Pull Requests
+
+When opening a PR:
+
+- explain the user-facing change clearly
+- mention affected providers or pipelines
+- include screenshots for popup or in-player UI changes
+- note any manual test scenarios you ran
+
+## Bug Reports
+
+Helpful bug reports include:
+
+- browser name and version
+- extension version
+- selected provider
+- whether auto-start was enabled
+- the YouTube URL category involved
+  examples: lecture, podcast, music video, short clip
+- console errors from the extension or page if available
+
+## Style Notes
+
+- keep changes aligned with the existing architecture
+- prefer capability-driven behavior over provider-specific branching
+- keep strings localizable
+- preserve both English and Arabic support

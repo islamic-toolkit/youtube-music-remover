@@ -18,6 +18,7 @@ desktop.ini
 # Node (if added later)
 node_modules/
 package-lock.json
+tests/
 
 # Environment
 .env
