@@ -61,7 +61,6 @@ const REMOVE_MUSIC_MAX_POLLS = 200;
 const REMOVE_MUSIC_ORIGIN = "https://remove.music";
 const REMOVE_MUSIC_REFERER = "https://remove.music/";
 const REMOVE_MUSIC_PLATFORMS = ["1", "2", "3", "4"];  // Rotate across platforms
-
 const backgroundI18n = globalThis.ITK_I18N || {};
 let currentLang = typeof backgroundI18n.normalizeLang === "function"
   ? backgroundI18n.normalizeLang("en")
@@ -1470,23 +1469,13 @@ const RemoveMusicProvider = {
     );
     // Strip ID3 metadata to prevent the API from fingerprinting the song
     chunkBlob = await stripId3Tags(chunkBlob);
-    const sessionPart = (job.providerSessionUuid || "unknown").slice(0, 8);
     const mimeType = audioData.mimeType || "audio/mpeg";
     const ext = mimeType.includes("mp4") ? "m4a" : mimeType.includes("webm") ? "webm" : "mp3";
-    // Use random filename per upload to avoid pattern-based tracking
-    const rnd = Math.random().toString(36).substring(2, 10);
-    const fileName = `audio_${rnd}.${ext}`;
-
-    // Step 1: Get server time
-    const serverTime = await removeMusicGetServerTime(signal);
-
-    // Step 2: Upload chunk
     const uploadResult = await removeMusicUpload({
       audioBlob: chunkBlob,
-      fileName,
+      fileExt: ext,
       mimeType,
       fileSize: chunkBlob.size,
-      serverTime,
       signal,
     });
 
@@ -1587,7 +1576,7 @@ const REMOVE_MUSIC_MAX_UPLOAD_RETRIES = 4;
 const REMOVE_MUSIC_RETRY_BASE_DELAY_MS = 1500;
 
 async function removeMusicUpload(options) {
-  const { audioBlob, fileName, mimeType, fileSize, serverTime, signal } = options;
+  const { audioBlob, fileExt, mimeType, fileSize, signal } = options;
 
   let lastError = null;
 
@@ -1602,6 +1591,9 @@ async function removeMusicUpload(options) {
 
     const spoofIp = await getSpoofIp();
     const platform = getRandomPlatform();
+    const serverTime = await removeMusicGetServerTime(signal);
+    const rnd = Math.random().toString(36).substring(2, 10);
+    const fileName = `audio_${rnd}.${fileExt || "mp3"}`;
 
     // Rebuild FormData each attempt (consumed by fetch)
     const formData = new FormData();
