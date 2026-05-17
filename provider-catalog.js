@@ -18,6 +18,14 @@ const PROVIDER_CATALOG = Object.freeze({
     supportsChunkDuration: true,
     supportsPlaybackPrompt: true,
     selectionWarningKey: null
+  }),
+  lalal: Object.freeze({
+    id: "lalal",
+    labelKey: "providerLalal",
+    pipelineType: UPLOAD_AUDIO_PIPELINE,
+    supportsChunkDuration: true,
+    supportsPlaybackPrompt: true,
+    selectionWarningKey: null
   })
 });
 

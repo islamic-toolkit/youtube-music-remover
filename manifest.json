@@ -31,7 +31,10 @@
     "https://loader.to/*",
     "https://*.savenow.to/*",
     "https://iotacloud.org/*",
-    "https://*.iotacloud.org/*"
+    "https://*.iotacloud.org/*",
+    "https://www.lalal.ai/*",
+    "https://d.lalal.ai/*",
+    "https://lalalai.s3.amazonaws.com/*"
   ],
   "background": {
     "service_worker": "background.js"

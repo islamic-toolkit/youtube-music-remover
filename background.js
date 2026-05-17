@@ -61,6 +61,24 @@ const REMOVE_MUSIC_MAX_POLLS = 200;
 const REMOVE_MUSIC_ORIGIN = "https://remove.music";
 const REMOVE_MUSIC_REFERER = "https://remove.music/";
 const REMOVE_MUSIC_PLATFORMS = ["1", "2", "3", "4"];  // Rotate across platforms
+
+// —— LALAL.AI Config ——
+const LALAL_BASE = "https://www.lalal.ai";
+const LALAL_ORIGIN = LALAL_BASE;
+const LALAL_REFERER = `${LALAL_BASE}/`;
+const LALAL_UPLOAD_CREATE_URL = `${LALAL_BASE}/api/upload/multipart/create/`;
+const LALAL_UPLOAD_COMPLETE_URL = `${LALAL_BASE}/api/upload/multipart/complete/`;
+const LALAL_PREVIEW_URL = `${LALAL_BASE}/api/preview/`;
+const LALAL_CHECK_URL = `${LALAL_BASE}/api/check/`;
+const LALAL_TURNSTILE_SITEKEY = "0x4AAAAAAAenW2l_Pl_5R69W";
+const LALAL_REQUEST_ID = "lalalai";
+const LALAL_STEM = "vocals";
+const LALAL_SPLITTER = "andromeda";
+const LALAL_NOISE_CANCELLING_LEVEL = "1";
+const LALAL_POLL_INTERVAL_MS = 2500;
+const LALAL_MAX_POLLS = 180;
+const LALAL_VERIFICATION_TAB_URL = "https://www.lalal.ai/";
+
 const backgroundI18n = globalThis.ITK_I18N || {};
 let currentLang = typeof backgroundI18n.normalizeLang === "function"
   ? backgroundI18n.normalizeLang("en")
@@ -71,6 +89,10 @@ let currentLang = typeof backgroundI18n.normalizeLang === "function"
 // to identify clients. We generate a random IP per processing session so each
 // batch of chunks appears to come from a different user.
 let _currentSpoofIp = "";
+let lalalVerificationTabId = 0;
+let lalalTokenRequestChain = Promise.resolve();
+let lalalCsrfToken = "";
+const assembledAudioCache = new Map();
 
 function generateRandomPublicIp() {
   // Generate a random IP that looks like a real public address
@@ -166,6 +188,193 @@ function getJobStorageArea() {
 function nowTs() { return Date.now(); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function isTerminalJob(job) { return !job || TERMINAL_JOB_STATUSES.has(job.status); }
+function isAbortError(error) { return error && (error.name === "AbortError" || error.code === DOMException.ABORT_ERR); }
+
+function getTabById(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.get(tabId, (tab) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) reject(new Error(runtimeError.message));
+      else resolve(tab);
+    });
+  });
+}
+
+function createTab(options) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.create(options, (tab) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) reject(new Error(runtimeError.message));
+      else resolve(tab);
+    });
+  });
+}
+
+function removeTab(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.remove(tabId, () => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) reject(new Error(runtimeError.message));
+      else resolve();
+    });
+  });
+}
+
+function waitForTabComplete(tabId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      handler(value);
+    };
+    const onUpdated = (updatedTabId, info, tab) => {
+      if (updatedTabId !== tabId || info.status !== "complete") return;
+      finish(resolve, tab);
+    };
+    const timeoutId = setTimeout(() => {
+      finish(reject, new Error(`Timed out waiting for tab ${tabId} to load`));
+    }, timeoutMs);
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    getTabById(tabId)
+      .then((tab) => {
+        if (tab && tab.status === "complete") finish(resolve, tab);
+      })
+      .catch((error) => finish(reject, error));
+  });
+}
+
+function executeScriptInMainWorld(tabId, func, args = []) {
+  return chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func,
+    args,
+  }).then((results) => {
+    if (!results || !results.length) throw new Error("No result returned from injected script");
+    return results[0].result;
+  });
+}
+
+function getPlaylistCacheEntry(audioUrl) {
+  const entry = assembledAudioCache.get(audioUrl);
+  if (!entry) return null;
+  assembledAudioCache.delete(audioUrl);
+  assembledAudioCache.set(audioUrl, entry);
+  return entry;
+}
+
+function setPlaylistCacheEntry(audioUrl, entry) {
+  assembledAudioCache.set(audioUrl, entry);
+  while (assembledAudioCache.size > 24) {
+    const oldestKey = assembledAudioCache.keys().next().value;
+    assembledAudioCache.delete(oldestKey);
+  }
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 32768;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function concatUint8Arrays(chunks) {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
+function parseByteRange(rangeHeader, totalLength) {
+  if (!rangeHeader || !/^bytes=/i.test(rangeHeader) || totalLength <= 0) return null;
+  const match = String(rangeHeader).match(/^bytes=(\d*)-(\d*)$/i);
+  if (!match) return null;
+
+  let start = match[1] === "" ? NaN : Number.parseInt(match[1], 10);
+  let end = match[2] === "" ? NaN : Number.parseInt(match[2], 10);
+
+  if (Number.isNaN(start) && Number.isNaN(end)) return null;
+  if (Number.isNaN(start)) {
+    const suffixLength = Math.max(0, end);
+    start = Math.max(0, totalLength - suffixLength);
+    end = totalLength - 1;
+  } else {
+    start = Math.max(0, Math.min(start, totalLength - 1));
+    end = Number.isNaN(end) ? totalLength - 1 : Math.max(start, Math.min(end, totalLength - 1));
+  }
+
+  if (start > end) return null;
+  return { start, end };
+}
+
+function isPlaylistLikeUrl(audioUrl) {
+  return /\.m3u8(?:$|[?#])/i.test(String(audioUrl || ""));
+}
+
+function parsePlaylistSegmentUrls(playlistText, playlistUrl) {
+  return String(playlistText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => new URL(line, playlistUrl).href);
+}
+
+async function fetchPlaylistAudioBytes(audioUrl) {
+  const cachedEntry = getPlaylistCacheEntry(audioUrl);
+  if (cachedEntry) return cachedEntry;
+
+  const playlistResponse = await fetch(audioUrl);
+  if (!playlistResponse.ok) throw new Error(`Playlist request failed: ${playlistResponse.status}`);
+
+  const playlistText = await playlistResponse.text();
+  const segmentUrls = parsePlaylistSegmentUrls(playlistText, audioUrl);
+  if (!segmentUrls.length) throw new Error("Playlist contained no audio segments");
+
+  const segmentResponses = await Promise.all(segmentUrls.map((segmentUrl) => fetch(segmentUrl)));
+  const segmentBytes = await Promise.all(segmentResponses.map(async (response) => {
+    if (!response.ok) throw new Error(`Playlist segment request failed: ${response.status}`);
+    return new Uint8Array(await response.arrayBuffer());
+  }));
+
+  const contentType = (segmentResponses.find((response) => response.headers.get("content-type"))?.headers.get("content-type") || "audio/mpeg").split(";")[0];
+  const mergedBytes = concatUint8Arrays(segmentBytes);
+  const entry = {
+    bytes: mergedBytes,
+    contentType,
+    acceptRanges: "bytes",
+  };
+  setPlaylistCacheEntry(audioUrl, entry);
+  return entry;
+}
+
+function extractCookieValue(cookieString, cookieName) {
+  const escapedName = String(cookieName || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = String(cookieString || "").match(new RegExp(`(?:^|;\\s*)${escapedName}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function buildProxyResponseFromBytes(bytes, options = {}) {
+  const totalLength = options.totalLength || bytes.length;
+  const range = options.range || null;
+  return {
+    base64: bytesToBase64(bytes),
+    contentType: options.contentType || "audio/mpeg",
+    contentRange: range ? `bytes ${range.start}-${range.end}/${totalLength}` : "",
+    contentLength: String(bytes.length),
+    acceptRanges: options.acceptRanges || "",
+    status: options.status || (range ? 206 : 200),
+  };
+}
 
 function normalizeLang(value) {
   if (typeof backgroundI18n.normalizeLang === "function") return backgroundI18n.normalizeLang(value);
@@ -486,6 +695,7 @@ async function cancelJobsForUrl(youtubeUrl, reason) {
     }
   }
   await setAllJobs(jobs);
+  await maybeCloseLalalVerificationTab();
 }
 
 async function cancelJobById(jobId) {
@@ -496,6 +706,7 @@ async function cancelJobById(jobId) {
       status: "cancelled", phase: "done", detail: "Cancelled", nextPollAt: 0,
     }));
   }
+  await maybeCloseLalalVerificationTab();
 }
 
 // â”€â”€â”€ Vocals URL Cache â”€â”€â”€
@@ -1671,6 +1882,376 @@ async function removeMusicGetStatus(separatorId, signal, accessToken) {
 }
 
 
+// —— LALAL.AI Provider ——
+
+const LalalProvider = {
+  getPollInterval() { return LALAL_POLL_INTERVAL_MS; },
+
+  async prepareChunk(chunk, job, signal) {
+    const audioData = audioBlobs.get(job.id);
+    if (!audioData) throw new Error(bgTr("audioBlobNotFoundRestart"));
+
+    const mp3SecondIndex = await resolveMp3SecondIndex(audioData);
+    let chunkBlob = await sliceAudioBlob(
+      audioData.blob,
+      chunk.startSec,
+      chunk.endSec,
+      audioData.durationSec,
+      mp3SecondIndex
+    );
+    chunkBlob = await stripId3Tags(chunkBlob);
+
+    const mimeType = audioData.mimeType || "audio/mpeg";
+    const ext = mimeType.includes("mp4") ? "m4a" : mimeType.includes("webm") ? "webm" : "mp3";
+    const fileName = `audio_${Math.random().toString(36).slice(2, 10)}.${ext}`;
+
+    const uploadInit = await lalalCreateMultipartUpload(fileName, signal);
+    await lalalUploadMultipartPart(uploadInit.uploadUrl, chunkBlob, mimeType, signal);
+    const completedUpload = await lalalCompleteMultipartUpload(uploadInit.fileId, uploadInit.uploadId, signal);
+
+    sendStatus(job.tabId, "processing", bgTr("lalalRequestingVerification"));
+    const turnstileToken = await acquireLalalTurnstileToken(signal);
+    const taskId = await lalalStartPreview(completedUpload.id || uploadInit.fileId, turnstileToken, signal);
+    if (!taskId) throw new Error(bgTr("lalalNoTaskId"));
+
+    return {
+      ...chunk,
+      status: "processing",
+      detail: bgTr("separatingChunk", { n: chunk.index + 1 }),
+      providerJobId: String(completedUpload.id || uploadInit.fileId),
+      _lalalTaskId: String(taskId),
+      _lalalPollCount: 0,
+      error: "",
+    };
+  },
+
+  async pollChunk(chunk, job, signal) {
+    if (!chunk.providerJobId) {
+      return { ...chunk, status: "error", error: bgTr("noProviderJobId") };
+    }
+
+    const pollCount = (chunk._lalalPollCount || 0) + 1;
+    if (pollCount > LALAL_MAX_POLLS) {
+      return { ...chunk, status: "error", error: bgTr("lalalTimedOut") };
+    }
+
+    const result = await lalalCheckStatus(chunk.providerJobId, signal);
+    const taskState = String(result?.task?.state || "").toLowerCase();
+    const preview = result?.preview || result?.split || null;
+    const vocalsUrl = resolveLalalVocalsUrl(preview);
+
+    if (taskState === "success") {
+      if (!vocalsUrl) {
+        return { ...chunk, status: "error", error: bgTr("lalalNoVocalsUrl") };
+      }
+      return {
+        ...chunk,
+        status: "ready",
+        detail: bgTr("done"),
+        vocalsUrl,
+        _lalalPollCount: pollCount,
+      };
+    }
+
+    if (taskState === "error" || taskState === "failed" || taskState === "failure" || String(result?.status || "").toLowerCase() === "error") {
+      const failedState = taskState || String(result?.status || "unknown");
+      return {
+        ...chunk,
+        status: "error",
+        error: bgTr("lalalPreviewFailedState", { state: failedState }),
+      };
+    }
+
+    const progress = Number(result?.task?.progress);
+    return {
+      ...chunk,
+      detail: Number.isFinite(progress) && progress > 0
+        ? bgTr("separatingProgress", { pct: Math.round(progress) })
+        : bgTr("separatingChunk", { n: chunk.index + 1 }),
+      _lalalPollCount: pollCount,
+    };
+  },
+};
+
+async function getLalalCsrfToken(forceRefresh = false) {
+  if (!forceRefresh && lalalCsrfToken) return lalalCsrfToken;
+
+  const tabId = await ensureLalalVerificationTab();
+  const token = await executeScriptInMainWorld(tabId, function() {
+    return document.cookie || "";
+  }).then((cookieString) => extractCookieValue(cookieString, "csrftoken"));
+
+  if (!token) throw new Error(bgTr("lalalVerificationUnavailable"));
+  lalalCsrfToken = token;
+  return token;
+}
+
+async function buildLalalHeaders(forceRefresh = false) {
+  const csrfToken = await getLalalCsrfToken(forceRefresh);
+  return {
+    "Accept": "application/json, text/plain, */*",
+    "Origin": LALAL_ORIGIN,
+    "Referer": LALAL_REFERER,
+    "X-CSRFToken": csrfToken,
+    "X-Request-Id": LALAL_REQUEST_ID,
+  };
+}
+
+async function lalalCreateMultipartUpload(fileName, signal) {
+  const formData = new FormData();
+  formData.append("file_name", fileName);
+  formData.append("parts_count", "1");
+
+  const response = await fetch(LALAL_UPLOAD_CREATE_URL, {
+    method: "POST",
+    headers: await buildLalalHeaders(),
+    body: formData,
+    signal,
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(bgTr("lalalUploadInitFailedStatus", { status: response.status }));
+
+  const data = await response.json();
+  const uploadUrl = Array.isArray(data.upload_urls) ? data.upload_urls[0] : "";
+  if (!data.file_id || !data.upload_id || !uploadUrl) {
+    throw new Error(bgTr("lalalUploadInitFailedStatus", { status: response.status }));
+  }
+  return {
+    fileId: String(data.file_id),
+    uploadId: String(data.upload_id),
+    uploadUrl,
+  };
+}
+
+async function lalalUploadMultipartPart(uploadUrl, audioBlob, mimeType, signal) {
+  const response = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: mimeType ? { "Content-Type": mimeType } : undefined,
+    body: audioBlob,
+    signal,
+  });
+  if (!response.ok) throw new Error(bgTr("lalalUploadPartFailedStatus", { status: response.status }));
+}
+
+async function lalalCompleteMultipartUpload(fileId, uploadId, signal) {
+  const formData = new FormData();
+  formData.append("file_id", fileId);
+  formData.append("upload_id", uploadId);
+
+  const response = await fetch(LALAL_UPLOAD_COMPLETE_URL, {
+    method: "POST",
+    headers: await buildLalalHeaders(),
+    body: formData,
+    signal,
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(bgTr("lalalUploadCompleteFailedStatus", { status: response.status }));
+  return response.json();
+}
+
+async function lalalStartPreview(fileId, turnstileToken, signal) {
+  const formData = new FormData();
+  formData.append("id", fileId);
+  formData.append("noise_cancelling_level", LALAL_NOISE_CANCELLING_LEVEL);
+  formData.append("stem", LALAL_STEM);
+  formData.append("splitter", LALAL_SPLITTER);
+  formData.append("dereverb_enabled", "false");
+  formData.append("enhanced_processing_enabled", "false");
+  formData.append("multivocal", "");
+  formData.append("with_segments", "true");
+  formData.append("turnstile-response", turnstileToken);
+
+  const response = await fetch(LALAL_PREVIEW_URL, {
+    method: "POST",
+    headers: await buildLalalHeaders(),
+    body: formData,
+    signal,
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(bgTr("lalalPreviewFailedStatus", { status: response.status }));
+  const data = await response.json();
+  return data.task_id ? String(data.task_id) : "";
+}
+
+async function lalalCheckStatus(fileId, signal) {
+  const formData = new FormData();
+  formData.append("id", fileId);
+
+  const response = await fetch(LALAL_CHECK_URL, {
+    method: "POST",
+    headers: await buildLalalHeaders(),
+    body: formData,
+    signal,
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(bgTr("lalalStatusCheckFailedStatus", { status: response.status }));
+
+  const data = await response.json();
+  const resultMap = data?.result || {};
+  return resultMap[fileId] || resultMap[String(fileId)] || null;
+}
+
+function resolveLalalVocalsUrl(result) {
+  if (!result || typeof result !== "object") return "";
+  return result.stem_track || result.stem_track_playlist || "";
+}
+
+async function ensureLalalVerificationTab() {
+  if (lalalVerificationTabId) {
+    try {
+      await waitForTabComplete(lalalVerificationTabId);
+      return lalalVerificationTabId;
+    } catch (error) {
+      lalalVerificationTabId = 0;
+    }
+  }
+
+  const tab = await createTab({ url: LALAL_VERIFICATION_TAB_URL, active: false });
+  if (!tab || !tab.id) throw new Error(bgTr("lalalVerificationUnavailable"));
+  lalalVerificationTabId = tab.id;
+  await waitForTabComplete(tab.id);
+  return tab.id;
+}
+
+function acquireLalalTurnstileToken(signal) {
+  const nextRequest = lalalTokenRequestChain.then(async () => {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+    const tabId = await ensureLalalVerificationTab();
+    try {
+      const token = await executeScriptInMainWorld(tabId, function(sitekey) {
+        const SCRIPT_ID = "__itk-lalal-turnstile-api";
+        const HOST_ID = "__itk-lalal-turnstile-host";
+        const SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+
+        function ensureHost() {
+          let host = document.getElementById(HOST_ID);
+          if (!host) {
+            host = document.createElement("div");
+            host.id = HOST_ID;
+            host.style.position = "fixed";
+            host.style.top = "-9999px";
+            host.style.left = "-9999px";
+            host.style.width = "1px";
+            host.style.height = "1px";
+            host.style.opacity = "0";
+            document.body.appendChild(host);
+          }
+          host.innerHTML = "";
+          return host;
+        }
+
+        function ensureScript() {
+          if (window.turnstile && typeof window.turnstile.render === "function") {
+            return Promise.resolve();
+          }
+          return new Promise((resolve, reject) => {
+            let script = document.getElementById(SCRIPT_ID);
+            const finishResolve = () => {
+              if (window.turnstile && typeof window.turnstile.render === "function") resolve();
+              else reject(new Error("Turnstile unavailable"));
+            };
+
+            if (!script) {
+              script = document.createElement("script");
+              script.id = SCRIPT_ID;
+              script.src = SCRIPT_SRC;
+              script.async = true;
+              script.defer = true;
+              script.onload = finishResolve;
+              script.onerror = () => reject(new Error("Turnstile script failed"));
+              document.head.appendChild(script);
+              return;
+            }
+
+            script.addEventListener("load", finishResolve, { once: true });
+            script.addEventListener("error", () => reject(new Error("Turnstile script failed")), { once: true });
+          });
+        }
+
+        return ensureScript().then(() => {
+          if (!document.body || !window.turnstile || typeof window.turnstile.render !== "function") {
+            throw new Error("Turnstile unavailable");
+          }
+
+          const host = ensureHost();
+          return new Promise((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+              try { if (widgetId !== null) window.turnstile.remove(widgetId); } catch (error) {}
+              host.innerHTML = "";
+              reject(new Error("Turnstile timed out"));
+            }, 60000);
+
+            let widgetId = null;
+            const cleanup = () => {
+              clearTimeout(timeoutId);
+              try { if (widgetId !== null) window.turnstile.remove(widgetId); } catch (error) {}
+              host.innerHTML = "";
+            };
+
+            widgetId = window.turnstile.render(host, {
+              sitekey,
+              size: "invisible",
+              callback: (token) => {
+                cleanup();
+                resolve(token);
+              },
+              "error-callback": () => {
+                cleanup();
+                reject(new Error("Turnstile unavailable"));
+              },
+              "expired-callback": () => {
+                cleanup();
+                reject(new Error("Turnstile timed out"));
+              },
+              "timeout-callback": () => {
+                cleanup();
+                reject(new Error("Turnstile timed out"));
+              }
+            });
+
+            try {
+              window.turnstile.execute(widgetId);
+            } catch (error) {
+              cleanup();
+              reject(error instanceof Error ? error : new Error(String(error)));
+            }
+          });
+        });
+      }, [LALAL_TURNSTILE_SITEKEY]);
+
+      if (!token || typeof token !== "string") {
+        throw new Error(bgTr("lalalVerificationUnavailable"));
+      }
+      return token;
+    } catch (error) {
+      const message = String(error?.message || error || "");
+      if (/timed out/i.test(message)) throw new Error(bgTr("lalalVerificationTimedOut"));
+      throw new Error(bgTr("lalalVerificationUnavailable"));
+    }
+  });
+
+  lalalTokenRequestChain = nextRequest.catch(() => {});
+  return nextRequest;
+}
+
+async function maybeCloseLalalVerificationTab(force = false) {
+  if (!lalalVerificationTabId) return;
+  if (!force) {
+    const jobs = await getAllJobs();
+    const hasActiveLalalJob = Object.values(jobs).some((job) => job.provider === "lalal" && !isTerminalJob(job));
+    if (hasActiveLalalJob) return;
+  }
+
+  const tabId = lalalVerificationTabId;
+  lalalVerificationTabId = 0;
+  lalalCsrfToken = "";
+  try {
+    await removeTab(tabId);
+  } catch (error) {}
+}
+
+
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // PROVIDER REGISTRY
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -1681,6 +2262,7 @@ const DIRECT_LINK_PROVIDERS = {
 
 const UPLOAD_AUDIO_PROVIDERS = {
   removeMusic: RemoveMusicProvider,
+  lalal: LalalProvider,
 };
 
 function getDirectLinkProvider(name) {
@@ -1853,6 +2435,9 @@ async function advanceJob(jobId) {
     }
 
     await saveJob(job);
+    if (job.provider === "lalal" && isTerminalJob(job)) {
+      await maybeCloseLalalVerificationTab();
+    }
     sendStatus(job.tabId, getStatusMessageType(job), job.detail);
     return job;
 
@@ -1865,6 +2450,9 @@ async function advanceJob(jobId) {
       });
       await saveJob(cancelled);
       audioBlobs.delete(jobId);
+      if (cancelled.provider === "lalal") {
+        await maybeCloseLalalVerificationTab();
+      }
       return cancelled;
     }
 
@@ -1888,6 +2476,9 @@ async function failJob(job, errorMessage) {
   await saveJob(failed);
   sendStatus(failed.tabId, "error", failed.detail);
   audioBlobs.delete(job.id);
+  if (failed.provider === "lalal") {
+    await maybeCloseLalalVerificationTab();
+  }
   return failed;
 }
 
@@ -2056,21 +2647,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "FETCH_AUDIO_PROXY") {
     (async () => {
       try {
+        const audioUrl = String(msg.audioUrl || "");
+
+        if (isPlaylistLikeUrl(audioUrl)) {
+          const playlistEntry = await fetchPlaylistAudioBytes(audioUrl);
+          const requestedRange = parseByteRange(msg.range, playlistEntry.bytes.length);
+          const responseBytes = requestedRange
+            ? playlistEntry.bytes.subarray(requestedRange.start, requestedRange.end + 1)
+            : playlistEntry.bytes;
+
+          sendResponse(buildProxyResponseFromBytes(responseBytes, {
+            contentType: playlistEntry.contentType,
+            totalLength: playlistEntry.bytes.length,
+            acceptRanges: playlistEntry.acceptRanges,
+            range: requestedRange,
+          }));
+          return;
+        }
+
         const headers = {};
         if (msg.range) headers.Range = msg.range;
-        const response = await fetch(msg.audioUrl, { headers });
-        const contentType = response.headers.get("content-type") || "audio/mpeg";
+        const response = await fetch(audioUrl, { headers });
+        if (!response.ok && response.status !== 206) {
+          throw new Error(`Audio fetch failed: ${response.status}`);
+        }
+
+        const contentType = (response.headers.get("content-type") || "audio/mpeg").split(";")[0];
         const contentRange = response.headers.get("content-range") || "";
         const contentLength = response.headers.get("content-length") || "";
         const acceptRanges = response.headers.get("accept-ranges") || "";
-        const arrayBuffer = await response.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuffer);
-        let binary = "";
-        const chunkSize = 32768;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-        }
-        sendResponse({ base64: btoa(binary), contentType, contentRange, contentLength, acceptRanges, status: response.status });
+        const bytes = new Uint8Array(await response.arrayBuffer());
+
+        sendResponse({
+          ...buildProxyResponseFromBytes(bytes, {
+            contentType,
+            acceptRanges,
+            status: response.status,
+          }),
+          contentRange,
+          contentLength: contentLength || String(bytes.length),
+        });
       } catch (error) {
         sendResponse({ error: localizeRuntimeText(error.message) });
       }
