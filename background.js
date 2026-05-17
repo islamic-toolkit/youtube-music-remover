@@ -888,6 +888,20 @@ async function y2mateFetchConfig(signal) {
   const response = await fetch("https://y2mate.sc/", { signal });
   if (!response.ok) throw new Error(`Failed to fetch y2mate.sc page: ${response.status}`);
   const html = await response.text();
+  
+  // Try new format first: <script data-key="..." src="/js/.../y2mate.js">
+  const dataKeyMatch = html.match(/data-key="([^"]+)"/);
+  if (dataKeyMatch) {
+    const key = atob(dataKeyMatch[1]);
+    console.log("[IslamicToolkit] Found y2mate key using new data-key format");
+    return {
+      key,
+      iotacloudParamName: "r",
+      etacloudInitParamName: "r",
+    };
+  }
+  
+  // Fallback to old format: var json = JSON.parse('...');
   const jsonMatch = html.match(/var\s+json\s*=\s*JSON\.parse\('([^']+)'\);/);
   if (!jsonMatch) throw new Error("Could not find auth payload on y2mate.sc page");
   const payload = JSON.parse(jsonMatch[1]);
@@ -913,7 +927,7 @@ async function getY2MateConfig(signal) {
 async function iotacloudDownload(videoId, signal, statusCallback) {
   const config = await getY2MateConfig(signal);
   const timestamp = getY2MateTimestampSec();
-  const apiUrl = `https://iotacloud.org/api/?${config.iotacloudParamName}=${encodeURIComponent(config.key)}&r=1&v=${encodeURIComponent(videoId)}&t=${timestamp}`;
+  const apiUrl = `https://iotacloud.org/api/?r=1&v=${encodeURIComponent(videoId)}&_=${timestamp}`;
 
   if (statusCallback) statusCallback("Converting video to audio...");
 
@@ -921,6 +935,7 @@ async function iotacloudDownload(videoId, signal, statusCallback) {
     signal,
     headers: {
       "Accept": "*/*",
+      "Authorization": `Bearer ${config.key}`,
       "Origin": "https://y2mate.sc",
       "Referer": "https://y2mate.sc/",
     },
@@ -930,7 +945,7 @@ async function iotacloudDownload(videoId, signal, statusCallback) {
   const downloadURL = data.downloadURL || data.url || "";
 
   if (data.progress === "error") throw new Error("iotacloud: conversion error");
-  if (downloadURL) return { downloadURL, durationSec: data.durationSec || 0 };
+  if (data.progress === "completed" && downloadURL) return { downloadURL, durationSec: data.durationSec || 0 };
 
   // Poll for completion
   const MAX_POLLS = 120;
@@ -938,11 +953,12 @@ async function iotacloudDownload(videoId, signal, statusCallback) {
     await sleep(3000);
     if (statusCallback) statusCallback(`Converting audio... (poll ${pollCount}/${MAX_POLLS})`);
 
-    const pollUrl = `https://iotacloud.org/api/?${config.iotacloudParamName}=${encodeURIComponent(config.key)}&r=${pollCount}&v=${encodeURIComponent(videoId)}&t=${timestamp}`;
+    const pollUrl = `https://iotacloud.org/api/?r=${pollCount}&v=${encodeURIComponent(videoId)}&_=${getY2MateTimestampSec()}`;
     const pollResp = await fetch(pollUrl, {
       signal,
       headers: {
         "Accept": "*/*",
+        "Authorization": `Bearer ${config.key}`,
         "Origin": "https://y2mate.sc",
         "Referer": "https://y2mate.sc/",
       },
@@ -952,7 +968,7 @@ async function iotacloudDownload(videoId, signal, statusCallback) {
     const pollDownloadURL = result.downloadURL || result.url || "";
 
     if (result.progress === "error") throw new Error("iotacloud: conversion error during polling");
-    if (pollDownloadURL) return { downloadURL: pollDownloadURL, durationSec: result.durationSec || 0 };
+    if (result.progress === "completed" && pollDownloadURL) return { downloadURL: pollDownloadURL, durationSec: result.durationSec || 0 };
   }
 
   throw new Error("iotacloud: conversion did not complete");
@@ -1001,8 +1017,7 @@ function describeY2MateError(code) {
 async function etacloudDownload(videoId, signal, statusCallback) {
   const config = await getY2MateConfig(signal);
   const initUrl = buildUrlWithParams(ETACLOUD_INIT_URL, {
-    [config.etacloudInitParamName]: config.key,
-    t: getY2MateTimestampSec(),
+    _: getY2MateTimestampSec(),
   });
 
   if (statusCallback) statusCallback("Preparing Y2Mate fallback...");
@@ -1011,6 +1026,7 @@ async function etacloudDownload(videoId, signal, statusCallback) {
     signal,
     headers: {
       "Accept": "application/json",
+      "Authorization": `Bearer ${config.key}`,
       "Origin": "https://y2mate.sc",
       "Referer": "https://y2mate.sc/",
     },
@@ -1024,7 +1040,7 @@ async function etacloudDownload(videoId, signal, statusCallback) {
   let requestUrl = buildUrlWithParams(initData.convertURL, {
     v: videoId,
     f: "mp3",
-    t: getY2MateTimestampSec(),
+    _: getY2MateTimestampSec(),
   });
 
   for (let step = 1; step <= ETACLOUD_MAX_STEPS; step++) {
